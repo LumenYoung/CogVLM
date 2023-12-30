@@ -13,16 +13,25 @@ from PIL import Image
 from transformers import AutoModelForCausalLM, LlamaTokenizer
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--quant", choices=[4], type=int, default=None, help='quantization bits')
-parser.add_argument("--from_pretrained", type=str, default="THUDM/cogagent-chat-hf", help='pretrained ckpt')
-parser.add_argument("--local_tokenizer", type=str, default="lmsys/vicuna-7b-v1.5", help='tokenizer path')
+parser.add_argument(
+    "--quant", choices=[4], type=int, default=None, help="quantization bits"
+)
+parser.add_argument(
+    "--from_pretrained",
+    type=str,
+    default="THUDM/cogagent-chat-hf",
+    help="pretrained ckpt",
+)
+parser.add_argument(
+    "--local_tokenizer", type=str, default="lmsys/vicuna-7b-v1.5", help="tokenizer path"
+)
 parser.add_argument("--fp16", action="store_true")
 parser.add_argument("--bf16", action="store_true")
 
 args = parser.parse_args()
 MODEL_PATH = args.from_pretrained
 TOKENIZER_PATH = args.local_tokenizer
-DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 tokenizer = LlamaTokenizer.from_pretrained(TOKENIZER_PATH)
 if args.bf16:
@@ -30,7 +39,11 @@ if args.bf16:
 else:
     torch_type = torch.float16
 
-print("========Use torch type as:{} with device:{}========\n\n".format(torch_type, DEVICE))
+print(
+    "========Use torch type as:{} with device:{}========\n\n".format(torch_type, DEVICE)
+)
+
+max_memory_mapping = {0: "2GB", 1: "12GB"}
 
 if args.quant:
     model = AutoModelForCausalLM.from_pretrained(
@@ -38,28 +51,41 @@ if args.quant:
         torch_dtype=torch_type,
         low_cpu_mem_usage=True,
         load_in_4bit=True,
-        trust_remote_code=True
+        trust_remote_code=True,
+        device_map="auto",
+        max_memory=max_memory_mapping,
     ).eval()
 else:
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL_PATH,
-        torch_dtype=torch_type,
-        low_cpu_mem_usage=True,
-        load_in_4bit=args.quant is not None,
-        trust_remote_code=True
-    ).to(DEVICE).eval()
+    model = (
+        AutoModelForCausalLM.from_pretrained(
+            MODEL_PATH,
+            torch_dtype=torch_type,
+            low_cpu_mem_usage=True,
+            load_in_4bit=args.quant is not None,
+            trust_remote_code=True,
+            device_map="auto",
+            max_memory=max_memory_mapping,
+        ).eval()
+        # .to(DEVICE)
+    )
 
 text_only_template = "A chat between a curious user and an artificial intelligence assistant. The assistant gives helpful, detailed, and polite answers to the user's questions. USER: {} ASSISTANT:"
 
 while True:
     image_path = input("image path >>>>> ")
-    if image_path == '':
-        print('You did not enter image path, the following will be a plain text conversation.')
+    if image_path == "":
+        print(
+            "You did not enter image path, the following will be a plain text conversation."
+        )
         image = None
-        text_only_first_query = True    
+        text_only_first_query = True
     else:
-        image = Image.open(image_path).convert('RGB')
-    
+        try:
+            image = Image.open(image_path).convert("RGB")
+        except FileNotFoundError:
+            print("Image not found, please try again.")
+            continue
+
     history = []
 
     while True:
@@ -72,31 +98,38 @@ while True:
                 query = text_only_template.format(query)
                 text_only_first_query = False
             else:
-                old_prompt = ''
+                old_prompt = ""
                 for _, (old_query, response) in enumerate(history):
                     old_prompt += old_query + " " + response + "\n"
                 query = old_prompt + "USER: {} ASSISTANT:".format(query)
 
         if image is None:
-            input_by_model = model.build_conversation_input_ids(tokenizer, query=query, history=history, template_version='base')
+            input_by_model = model.build_conversation_input_ids(
+                tokenizer, query=query, history=history, template_version="base"
+            )
         else:
-            input_by_model = model.build_conversation_input_ids(tokenizer, query=query, history=history, images=[image])
+            input_by_model = model.build_conversation_input_ids(
+                tokenizer, query=query, history=history, images=[image]
+            )
 
         inputs = {
-            'input_ids': input_by_model['input_ids'].unsqueeze(0).to(DEVICE),
-            'token_type_ids': input_by_model['token_type_ids'].unsqueeze(0).to(DEVICE),
-            'attention_mask': input_by_model['attention_mask'].unsqueeze(0).to(DEVICE),
-            'images': [[input_by_model['images'][0].to(DEVICE).to(torch_type)]] if image is not None else None,
+            "input_ids": input_by_model["input_ids"].unsqueeze(0).to(DEVICE),
+            "token_type_ids": input_by_model["token_type_ids"].unsqueeze(0).to(DEVICE),
+            "attention_mask": input_by_model["attention_mask"].unsqueeze(0).to(DEVICE),
+            "images": [[input_by_model["images"][0].to(DEVICE).to(torch_type)]]
+            if image is not None
+            else None,
         }
-        if 'cross_images' in input_by_model and input_by_model['cross_images']:
-            inputs['cross_images'] = [[input_by_model['cross_images'][0].to(DEVICE).to(torch_type)]]
+        if "cross_images" in input_by_model and input_by_model["cross_images"]:
+            inputs["cross_images"] = [
+                [input_by_model["cross_images"][0].to(DEVICE).to(torch_type)]
+            ]
 
         # add any transformers params here.
-        gen_kwargs = {"max_length": 2048,
-                      "do_sample": False} # "temperature": 0.9
+        gen_kwargs = {"max_length": 2048, "do_sample": False}  # "temperature": 0.9
         with torch.no_grad():
             outputs = model.generate(**inputs, **gen_kwargs)
-            outputs = outputs[:, inputs['input_ids'].shape[1]:]
+            outputs = outputs[:, inputs["input_ids"].shape[1] :]
             response = tokenizer.decode(outputs[0])
             response = response.split("</s>")[0]
             print("\nCog:", response)
