@@ -1,0 +1,22 @@
+version: '3.8'
+services:
+
+  CogVLM:
+    image: lumeny/cogvlm:latest
+    command: /bin/bash
+    tty: true
+    container_name: cogvlm
+    # ports:
+    #   - 6001:6000
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              # count: 1
+              capabilities: [gpu]
+              device_ids: ['0','1']
+    volumes:
+      - .:/CogVLM
+    restart: unless-stopped
+
